@@ -11,10 +11,12 @@ import {
   Pencil,
   Users,
   Trash2,
-  RotateCcw
+  RotateCcw,
+  Loader2
 } from "lucide-react";
-import { useState } from "react";
-import { getUsers, createUser, deleteUser, resetUserPassword, updateUser, type AppUser } from "../auth";
+import { useState, useEffect } from "react";
+import { type AppUser } from "../auth";
+import { apiGetUsers, apiCreateUser, apiDeleteUser, apiResetPassword, apiUpdateUser } from "../api";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog";
@@ -40,6 +42,15 @@ interface SettingsDialogProps {
   currentUser?: AppUser | null;
 }
 
+interface ApiUser {
+  id: string;
+  username: string;
+  displayName: string;
+  role: "admin" | "user";
+  mustChangePassword: boolean;
+  createdAt: string;
+}
+
 export function SettingsDialog({ isOpen, onClose, salesReps, leadSources, leads, onAddTeamMember, onUpdateTeamMember, currentUser }: SettingsDialogProps) {
   const isAdmin = currentUser?.role === "admin";
   const [companyName, setCompanyName] = useState("GDI Digital Solutions");
@@ -47,7 +58,7 @@ export function SettingsDialog({ isOpen, onClose, salesReps, leadSources, leads,
   const [currency, setCurrency] = useState("usd");
   const [darkMode, setDarkMode] = useState(false);
   const [notificationEmail, setNotificationEmail] = useState("admin@gdidigital.com");
-  
+
   // Team member management state
   const [isAddMemberOpen, setIsAddMemberOpen] = useState(false);
   const [isEditMemberOpen, setIsEditMemberOpen] = useState(false);
@@ -59,48 +70,93 @@ export function SettingsDialog({ isOpen, onClose, salesReps, leadSources, leads,
   });
 
   // User management state
-  const [appUsers, setAppUsers] = useState<AppUser[]>(() => getUsers());
+  const [appUsers, setAppUsers] = useState<ApiUser[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
   const [isAddUserOpen, setIsAddUserOpen] = useState(false);
   const [newUserForm, setNewUserForm] = useState({ username: "", displayName: "", role: "user" as "admin" | "user" });
   const [isEditUserOpen, setIsEditUserOpen] = useState(false);
   const [editUserForm, setEditUserForm] = useState({ id: "", username: "", displayName: "", role: "user" as "admin" | "user" });
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
-  const refreshUsers = () => setAppUsers(getUsers());
+  useEffect(() => {
+    if (isOpen && isAdmin) {
+      loadUsers();
+    }
+  }, [isOpen, isAdmin]);
 
-  const handleCreateUser = () => {
+  const loadUsers = async () => {
+    setUsersLoading(true);
+    try {
+      const users = await apiGetUsers();
+      setAppUsers(users);
+    } catch (err) {
+      console.error("Failed to load users:", err);
+    } finally {
+      setUsersLoading(false);
+    }
+  };
+
+  const handleCreateUser = async () => {
     if (!newUserForm.username || !newUserForm.displayName) return;
-    createUser(newUserForm.username, newUserForm.displayName, newUserForm.role);
-    refreshUsers();
-    // Also add them as a team member
-    onAddTeamMember(newUserForm.displayName, newUserForm.username, "Sales Rep");
-    setIsAddUserOpen(false);
-    setNewUserForm({ username: "", displayName: "", role: "user" });
+    setActionLoading("create");
+    try {
+      await apiCreateUser(newUserForm.username, newUserForm.displayName, newUserForm.role);
+      await loadUsers();
+      onAddTeamMember(newUserForm.displayName, newUserForm.username, "Sales Rep");
+      setIsAddUserOpen(false);
+      setNewUserForm({ username: "", displayName: "", role: "user" });
+    } catch (err: any) {
+      alert(err.message || "Failed to create user");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
-  const handleDeleteUser = (userId: string) => {
-    deleteUser(userId);
-    refreshUsers();
+  const handleDeleteUser = async (userId: string) => {
+    setActionLoading(userId);
+    try {
+      await apiDeleteUser(userId);
+      await loadUsers();
+    } catch (err: any) {
+      alert(err.message || "Failed to delete user");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
-  const handleResetPassword = (userId: string) => {
-    resetUserPassword(userId);
-    refreshUsers();
+  const handleResetPassword = async (userId: string) => {
+    setActionLoading(`reset-${userId}`);
+    try {
+      await apiResetPassword(userId);
+      await loadUsers();
+    } catch (err: any) {
+      alert(err.message || "Failed to reset password");
+    } finally {
+      setActionLoading(null);
+    }
   };
 
-  const handleOpenEditUser = (user: AppUser) => {
+  const handleOpenEditUser = (user: ApiUser) => {
     setEditUserForm({ id: user.id, username: user.username, displayName: user.displayName, role: user.role });
     setIsEditUserOpen(true);
   };
 
-  const handleEditUser = () => {
+  const handleEditUser = async () => {
     if (!editUserForm.username || !editUserForm.displayName) return;
-    const oldUser = appUsers.find(u => u.id === editUserForm.id);
-    updateUser(editUserForm.id, editUserForm.displayName, editUserForm.username, editUserForm.role);
-    refreshUsers();
-    if (oldUser && oldUser.displayName !== editUserForm.displayName) {
-      onUpdateTeamMember(oldUser.displayName, editUserForm.displayName, editUserForm.username, "Sales Rep");
+    setActionLoading("edit");
+    try {
+      const oldUser = appUsers.find(u => u.id === editUserForm.id);
+      await apiUpdateUser(editUserForm.id, editUserForm.displayName, editUserForm.username, editUserForm.role);
+      await loadUsers();
+      if (oldUser && oldUser.displayName !== editUserForm.displayName) {
+        onUpdateTeamMember(oldUser.displayName, editUserForm.displayName, editUserForm.username, "Sales Rep");
+      }
+      setIsEditUserOpen(false);
+    } catch (err: any) {
+      alert(err.message || "Failed to update user");
+    } finally {
+      setActionLoading(null);
     }
-    setIsEditUserOpen(false);
   };
 
   const handleOpenAddMember = () => {
@@ -281,60 +337,69 @@ export function SettingsDialog({ isOpen, onClose, salesReps, leadSources, leads,
                   <CardDescription>Create and manage user login accounts</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="space-y-3">
-                    {appUsers.map(user => (
-                      <div key={user.id} className="flex items-center justify-between p-3 border rounded-lg">
-                        <div className="flex items-center gap-3">
-                          <div className={`${user.role === "admin" ? "bg-amber-500" : "bg-[#4169E1]"} text-white rounded-full h-10 w-10 flex items-center justify-center font-semibold text-sm`}>
-                            {user.displayName.split(' ').map(n => n[0]).join('').substring(0, 2)}
-                          </div>
-                          <div>
-                            <div className="font-medium flex items-center gap-2">
-                              {user.displayName}
-                              {user.role === "admin" && (
-                                <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">Admin</span>
-                              )}
+                  {usersLoading ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {appUsers.map(user => (
+                        <div key={user.id} className="flex items-center justify-between p-3 border rounded-lg">
+                          <div className="flex items-center gap-3">
+                            <div className={`${user.role === "admin" ? "bg-amber-500" : "bg-[#4169E1]"} text-white rounded-full h-10 w-10 flex items-center justify-center font-semibold text-sm`}>
+                              {user.displayName.split(' ').map(n => n[0]).join('').substring(0, 2)}
                             </div>
-                            <div className="text-sm text-gray-500">
-                              Username: {user.username}
-                              {user.mustChangePassword && (
-                                <span className="ml-2 text-xs text-orange-600">(must change password)</span>
-                              )}
+                            <div>
+                              <div className="font-medium flex items-center gap-2">
+                                {user.displayName}
+                                {user.role === "admin" && (
+                                  <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">Admin</span>
+                                )}
+                              </div>
+                              <div className="text-sm text-gray-500">
+                                Username: {user.username}
+                                {user.mustChangePassword && (
+                                  <span className="ml-2 text-xs text-orange-600">(must change password)</span>
+                                )}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                        <div className="flex gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleOpenEditUser(user)}
-                            title="Edit user"
-                          >
-                            <Pencil className="h-3 w-3" />
-                          </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleResetPassword(user.id)}
-                            title="Reset password to default"
-                          >
-                            <RotateCcw className="h-3 w-3" />
-                          </Button>
-                          {user.id !== currentUser?.id && (
+                          <div className="flex gap-2">
                             <Button
                               variant="outline"
                               size="sm"
-                              className="text-red-600 hover:text-red-700 hover:bg-red-50"
-                              onClick={() => handleDeleteUser(user.id)}
-                              title="Delete user"
+                              onClick={() => handleOpenEditUser(user)}
+                              title="Edit user"
+                              disabled={actionLoading !== null}
                             >
-                              <Trash2 className="h-3 w-3" />
+                              <Pencil className="h-3 w-3" />
                             </Button>
-                          )}
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleResetPassword(user.id)}
+                              title="Reset password to default"
+                              disabled={actionLoading !== null}
+                            >
+                              {actionLoading === `reset-${user.id}` ? <Loader2 className="h-3 w-3 animate-spin" /> : <RotateCcw className="h-3 w-3" />}
+                            </Button>
+                            {user.id !== currentUser?.id && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                onClick={() => handleDeleteUser(user.id)}
+                                title="Delete user"
+                                disabled={actionLoading !== null}
+                              >
+                                {actionLoading === user.id ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                              </Button>
+                            )}
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                   <Button className="w-full" variant="outline" onClick={() => setIsAddUserOpen(true)}>
                     <Plus className="h-4 w-4 mr-2" />
                     Create User Account
@@ -587,8 +652,8 @@ export function SettingsDialog({ isOpen, onClose, salesReps, leadSources, leads,
                 </SelectContent>
               </Select>
             </div>
-            <Button 
-              className="w-full bg-[#4169E1] hover:bg-[#3557c2]" 
+            <Button
+              className="w-full bg-[#4169E1] hover:bg-[#3557c2]"
               onClick={handleAddMember}
             >
               Add Team Member
@@ -614,6 +679,7 @@ export function SettingsDialog({ isOpen, onClose, salesReps, leadSources, leads,
                 value={newUserForm.displayName}
                 onChange={(e) => setNewUserForm({ ...newUserForm, displayName: e.target.value })}
                 placeholder="John Doe"
+                disabled={actionLoading === "create"}
               />
             </div>
             <div className="space-y-2">
@@ -623,6 +689,7 @@ export function SettingsDialog({ isOpen, onClose, salesReps, leadSources, leads,
                 value={newUserForm.username}
                 onChange={(e) => setNewUserForm({ ...newUserForm, username: e.target.value })}
                 placeholder="johndoe or john@example.com"
+                disabled={actionLoading === "create"}
               />
               <p className="text-xs text-gray-400">This is what they will use to log in</p>
             </div>
@@ -647,9 +714,9 @@ export function SettingsDialog({ isOpen, onClose, salesReps, leadSources, leads,
             <Button
               className="w-full bg-[#4169E1] hover:bg-[#3557c2]"
               onClick={handleCreateUser}
-              disabled={!newUserForm.username || !newUserForm.displayName}
+              disabled={!newUserForm.username || !newUserForm.displayName || actionLoading === "create"}
             >
-              Create Account
+              {actionLoading === "create" ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Creating...</> : "Create Account"}
             </Button>
           </div>
         </DialogContent>
@@ -672,6 +739,7 @@ export function SettingsDialog({ isOpen, onClose, salesReps, leadSources, leads,
                 value={editUserForm.displayName}
                 onChange={(e) => setEditUserForm({ ...editUserForm, displayName: e.target.value })}
                 placeholder="John Doe"
+                disabled={actionLoading === "edit"}
               />
             </div>
             <div className="space-y-2">
@@ -681,6 +749,7 @@ export function SettingsDialog({ isOpen, onClose, salesReps, leadSources, leads,
                 value={editUserForm.username}
                 onChange={(e) => setEditUserForm({ ...editUserForm, username: e.target.value })}
                 placeholder="johndoe or john@example.com"
+                disabled={actionLoading === "edit"}
               />
               <p className="text-xs text-gray-400">This is what they will use to log in</p>
             </div>
@@ -702,9 +771,9 @@ export function SettingsDialog({ isOpen, onClose, salesReps, leadSources, leads,
             <Button
               className="w-full bg-[#4169E1] hover:bg-[#3557c2]"
               onClick={handleEditUser}
-              disabled={!editUserForm.username || !editUserForm.displayName}
+              disabled={!editUserForm.username || !editUserForm.displayName || actionLoading === "edit"}
             >
-              Save Changes
+              {actionLoading === "edit" ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Saving...</> : "Save Changes"}
             </Button>
           </div>
         </DialogContent>
@@ -756,8 +825,8 @@ export function SettingsDialog({ isOpen, onClose, salesReps, leadSources, leads,
                 </SelectContent>
               </Select>
             </div>
-            <Button 
-              className="w-full bg-[#4169E1] hover:bg-[#3557c2]" 
+            <Button
+              className="w-full bg-[#4169E1] hover:bg-[#3557c2]"
               onClick={handleUpdateMember}
             >
               Update Team Member

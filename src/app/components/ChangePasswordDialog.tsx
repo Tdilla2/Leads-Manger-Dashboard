@@ -1,15 +1,16 @@
 import { useState } from "react";
-import { Lock, Eye, EyeOff } from "lucide-react";
+import { Lock, Eye, EyeOff, Loader2 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
-import { updateUserPassword, type AppUser } from "../auth";
+import { type AppUser } from "../auth";
+import { apiChangePassword } from "../api";
 import logo from "../../assets/ce8d117a995a5a85f88957aad4cbbb801c7516f2.png";
 
 interface ChangePasswordDialogProps {
   user: AppUser;
-  onPasswordChanged: (updatedUser: AppUser) => void;
+  onPasswordChanged: (token: string, updatedUser: AppUser) => void;
 }
 
 export function ChangePasswordDialog({ user, onPasswordChanged }: ChangePasswordDialogProps) {
@@ -18,8 +19,9 @@ export function ChangePasswordDialog({ user, onPasswordChanged }: ChangePassword
   const [showNew, setShowNew] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
 
@@ -43,8 +45,15 @@ export function ChangePasswordDialog({ user, onPasswordChanged }: ChangePassword
       return;
     }
 
-    updateUserPassword(user.id, newPassword);
-    onPasswordChanged({ ...user, password: newPassword, mustChangePassword: false });
+    setLoading(true);
+    try {
+      const result = await apiChangePassword(newPassword);
+      onPasswordChanged(result.token, result.user);
+    } catch (err: any) {
+      setError(err.message || "Failed to change password.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -73,6 +82,7 @@ export function ChangePasswordDialog({ user, onPasswordChanged }: ChangePassword
                   placeholder="Enter new password"
                   className="pl-10 pr-10"
                   autoComplete="new-password"
+                  disabled={loading}
                 />
                 <button
                   type="button"
@@ -95,6 +105,7 @@ export function ChangePasswordDialog({ user, onPasswordChanged }: ChangePassword
                   placeholder="Confirm new password"
                   className="pl-10 pr-10"
                   autoComplete="new-password"
+                  disabled={loading}
                 />
                 <button
                   type="button"
@@ -112,8 +123,8 @@ export function ChangePasswordDialog({ user, onPasswordChanged }: ChangePassword
               </div>
             )}
 
-            <Button type="submit" className="w-full bg-[#4169E1] hover:bg-[#3557c2]">
-              Set New Password
+            <Button type="submit" className="w-full bg-[#4169E1] hover:bg-[#3557c2]" disabled={loading}>
+              {loading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Changing Password...</> : "Set New Password"}
             </Button>
           </form>
 

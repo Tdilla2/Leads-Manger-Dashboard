@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Users,
   UserPlus,
@@ -25,7 +25,8 @@ import {
   Send,
   Archive,
   ArchiveRestore,
-  LogOut
+  LogOut,
+  Loader2
 } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Input } from "./components/ui/input";
@@ -40,8 +41,13 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { SettingsDialog } from "./components/SettingsDialog";
 import { LoginScreen } from "./components/LoginScreen";
 import { ChangePasswordDialog } from "./components/ChangePasswordDialog";
-import { getSession, setSession, clearSession, getUsers, type AppUser } from "./auth";
+import { getStoredSession, setStoredSession, clearStoredSession, type AppUser } from "./auth";
+import {
+  apiGetLeads, apiGetLead, apiCreateLead, apiUpdateLead, apiArchiveLead,
+  apiAddNote, apiAddTask, apiToggleTask, apiAddActivity, apiGetUsers
+} from "./api";
 import logo from "../assets/ce8d117a995a5a85f88957aad4cbbb801c7516f2.png";
+import { toast, Toaster } from "sonner";
 
 interface Lead {
   id: string;
@@ -97,13 +103,13 @@ const leadSources = [
 
 
 export default function App() {
-  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => getSession());
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [salesReps, setSalesReps] = useState<string[]>(() => {
-    const users = getUsers();
-    const names = users.map(u => u.displayName);
-    return [...names, "Unassigned"];
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(() => {
+    const session = getStoredSession();
+    return session ? session.user : null;
   });
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [leadsLoading, setLeadsLoading] = useState(false);
+  const [salesReps, setSalesReps] = useState<string[]>(["Unassigned"]);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
@@ -129,10 +135,46 @@ export default function App() {
 
   const [newNote, setNewNote] = useState("");
   const [newTask, setNewTask] = useState({ title: "", dueDate: "" });
-  const [newActivity, setNewActivity] = useState({ 
-    type: "call" as Activity["type"], 
-    description: "" 
+  const [newActivity, setNewActivity] = useState({
+    type: "call" as Activity["type"],
+    description: ""
   });
+
+  // Load leads from API
+  const loadLeads = useCallback(async () => {
+    if (!currentUser) return;
+    setLeadsLoading(true);
+    try {
+      const data = await apiGetLeads({
+        archived: showArchived ? 'true' : 'false',
+      });
+      setLeads(data);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to load leads");
+    } finally {
+      setLeadsLoading(false);
+    }
+  }, [currentUser, showArchived]);
+
+  // Load sales reps from users API
+  const loadSalesReps = useCallback(async () => {
+    if (!currentUser) return;
+    try {
+      const users = await apiGetUsers();
+      const names = users.map((u: any) => u.displayName);
+      setSalesReps([...names, "Unassigned"]);
+    } catch {
+      // If user is not admin, they can't access users API — use fallback
+      setSalesReps([currentUser.displayName, "Unassigned"]);
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (currentUser && !currentUser.mustChangePassword) {
+      loadLeads();
+      loadSalesReps();
+    }
+  }, [currentUser, loadLeads, loadSalesReps]);
 
   const filteredLeads = leads.filter(lead => {
     const matchesSearch = lead.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -141,93 +183,68 @@ export default function App() {
     const matchesStatus = statusFilter === "all" || lead.status === statusFilter;
     const matchesSource = sourceFilter === "all" || lead.source === sourceFilter;
     const matchesAssigned = assignedFilter === "all" || lead.assignedTo === assignedFilter;
-    const matchesArchived = showArchived ? lead.archived === true : !lead.archived;
-    return matchesSearch && matchesStatus && matchesSource && matchesAssigned && matchesArchived;
+    return matchesSearch && matchesStatus && matchesSource && matchesAssigned;
   });
 
+  const activeLeads = leads.filter(l => !l.archived);
+
   const stats = {
-    total: leads.length,
-    new: leads.filter(l => l.status === "new").length,
-    converted: leads.filter(l => l.status === "won").length,
-    totalValue: leads.reduce((sum, l) => sum + l.value, 0),
-    avgScore: Math.round(leads.reduce((sum, l) => sum + l.score, 0) / leads.length),
-    hot: leads.filter(l => l.score >= 80).length
+    total: activeLeads.length,
+    new: activeLeads.filter(l => l.status === "new").length,
+    converted: activeLeads.filter(l => l.status === "won").length,
+    totalValue: activeLeads.reduce((sum, l) => sum + l.value, 0),
+    avgScore: activeLeads.length > 0 ? Math.round(activeLeads.reduce((sum, l) => sum + l.score, 0) / activeLeads.length) : 0,
+    hot: activeLeads.filter(l => l.score >= 80).length
   };
 
   const statusCounts = {
-    new: leads.filter(l => l.status === "new").length,
-    contacted: leads.filter(l => l.status === "contacted").length,
-    qualified: leads.filter(l => l.status === "qualified").length,
-    proposal: leads.filter(l => l.status === "proposal").length,
-    won: leads.filter(l => l.status === "won").length,
-    lost: leads.filter(l => l.status === "lost").length
+    new: filteredLeads.filter(l => l.status === "new").length,
+    contacted: filteredLeads.filter(l => l.status === "contacted").length,
+    qualified: filteredLeads.filter(l => l.status === "qualified").length,
+    proposal: filteredLeads.filter(l => l.status === "proposal").length,
+    won: filteredLeads.filter(l => l.status === "won").length,
+    lost: filteredLeads.filter(l => l.status === "lost").length
   };
 
-  const handleAddLead = () => {
-    if (editingLead) {
-      // Update existing lead
-      const updatedLeads = leads.map(lead => {
-        if (lead.id === editingLead.id) {
-          return {
-            ...lead,
-            name: newLead.name,
-            email: newLead.email,
-            phone: newLead.phone,
-            company: newLead.company,
-            status: newLead.status,
-            value: parseFloat(newLead.value) || 0,
-            source: newLead.source,
-            assignedTo: newLead.assignedTo,
-            activities: [
-              {
-                id: Date.now().toString(),
-                type: "note" as const,
-                description: "Lead information updated",
-                timestamp: new Date().toLocaleString()
-              },
-              ...lead.activities
-            ]
-          };
+  const handleAddLead = async () => {
+    try {
+      if (editingLead) {
+        const updated = await apiUpdateLead(editingLead.id, {
+          name: newLead.name,
+          email: newLead.email,
+          phone: newLead.phone,
+          company: newLead.company,
+          status: newLead.status,
+          value: parseFloat(newLead.value) || 0,
+          source: newLead.source,
+          assignedTo: newLead.assignedTo,
+        });
+
+        setLeads(prev => prev.map(l => l.id === editingLead.id ? updated : l));
+        if (selectedLead && selectedLead.id === editingLead.id) {
+          setSelectedLead(updated);
         }
-        return lead;
-      });
-      
-      setLeads(updatedLeads);
-      
-      // Update selected lead if it's the one being edited
-      if (selectedLead && selectedLead.id === editingLead.id) {
-        const updated = updatedLeads.find(l => l.id === editingLead.id);
-        if (updated) setSelectedLead(updated);
+        toast.success("Lead updated");
+      } else {
+        const created = await apiCreateLead({
+          name: newLead.name,
+          email: newLead.email,
+          phone: newLead.phone,
+          company: newLead.company,
+          status: newLead.status,
+          value: parseFloat(newLead.value) || 0,
+          source: newLead.source,
+          assignedTo: newLead.assignedTo,
+        });
+
+        setLeads(prev => [created, ...prev]);
+        toast.success("Lead created");
       }
-    } else {
-      // Add new lead
-      const lead: Lead = {
-        id: (leads.length + 1).toString(),
-        name: newLead.name,
-        email: newLead.email,
-        phone: newLead.phone,
-        company: newLead.company,
-        status: newLead.status,
-        value: parseFloat(newLead.value) || 0,
-        source: newLead.source,
-        createdAt: new Date().toISOString().split('T')[0],
-        assignedTo: newLead.assignedTo,
-        score: Math.floor(Math.random() * 40) + 60, // Random score 60-100
-        notes: [],
-        tasks: [],
-        activities: [
-          {
-            id: "1",
-            type: "note",
-            description: "Lead created",
-            timestamp: new Date().toLocaleString()
-          }
-        ]
-      };
-      
-      setLeads([lead, ...leads]);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to save lead");
+      return;
     }
-    
+
     setNewLead({
       name: "",
       email: "",
@@ -242,94 +259,62 @@ export default function App() {
     setIsAddDialogOpen(false);
   };
 
-  const handleAddNote = () => {
+  const handleAddNote = async () => {
     if (!selectedLead || !newNote) return;
-    
-    const updatedLeads = leads.map(lead => {
-      if (lead.id === selectedLead.id) {
-        const updatedLead = {
-          ...lead,
-          notes: [
-            ...lead.notes,
-            {
-              id: Date.now().toString(),
-              text: newNote,
-              createdAt: new Date().toISOString().split('T')[0],
-              author: "Current User"
-            }
-          ],
-          activities: [
-            {
-              id: Date.now().toString(),
-              type: "note" as const,
-              description: `Note added: ${newNote.substring(0, 50)}...`,
-              timestamp: new Date().toLocaleString()
-            },
-            ...lead.activities
-          ]
-        };
-        setSelectedLead(updatedLead);
-        return updatedLead;
-      }
-      return lead;
-    });
-    
-    setLeads(updatedLeads);
-    setNewNote("");
+
+    try {
+      await apiAddNote(selectedLead.id, newNote);
+      const refreshed = await apiGetLead(selectedLead.id);
+      setLeads(prev => prev.map(l => l.id === selectedLead.id ? refreshed : l));
+      setSelectedLead(refreshed);
+      setNewNote("");
+      toast.success("Note added");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to add note");
+    }
   };
 
-  const handleAddTask = () => {
+  const handleAddTask = async () => {
     if (!selectedLead || !newTask.title || !newTask.dueDate) return;
-    
-    const updatedLeads = leads.map(lead => {
-      if (lead.id === selectedLead.id) {
-        const updatedLead = {
-          ...lead,
-          tasks: [
-            ...lead.tasks,
-            {
-              id: Date.now().toString(),
-              title: newTask.title,
-              dueDate: newTask.dueDate,
-              completed: false
-            }
-          ]
-        };
-        setSelectedLead(updatedLead);
-        return updatedLead;
-      }
-      return lead;
-    });
-    
-    setLeads(updatedLeads);
-    setNewTask({ title: "", dueDate: "" });
+
+    try {
+      await apiAddTask(selectedLead.id, newTask.title, newTask.dueDate);
+      const refreshed = await apiGetLead(selectedLead.id);
+      setLeads(prev => prev.map(l => l.id === selectedLead.id ? refreshed : l));
+      setSelectedLead(refreshed);
+      setNewTask({ title: "", dueDate: "" });
+      toast.success("Task added");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to add task");
+    }
   };
 
-  const handleAddActivity = () => {
+  const handleToggleTask = async (taskId: string) => {
+    if (!selectedLead) return;
+
+    try {
+      await apiToggleTask(selectedLead.id, taskId);
+      const refreshed = await apiGetLead(selectedLead.id);
+      setLeads(prev => prev.map(l => l.id === selectedLead.id ? refreshed : l));
+      setSelectedLead(refreshed);
+    } catch (err: any) {
+      toast.error(err.message || "Failed to toggle task");
+    }
+  };
+
+  const handleAddActivity = async () => {
     if (!selectedLead || !newActivity.description) return;
-    
-    const updatedLeads = leads.map(lead => {
-      if (lead.id === selectedLead.id) {
-        const updatedLead = {
-          ...lead,
-          activities: [
-            ...lead.activities,
-            {
-              id: Date.now().toString(),
-              type: newActivity.type,
-              description: newActivity.description,
-              timestamp: new Date().toLocaleString()
-            }
-          ]
-        };
-        setSelectedLead(updatedLead);
-        return updatedLead;
-      }
-      return lead;
-    });
-    
-    setLeads(updatedLeads);
-    setNewActivity({ type: "call", description: "" });
+
+    try {
+      await apiAddActivity(selectedLead.id, newActivity.type, newActivity.description);
+      const refreshed = await apiGetLead(selectedLead.id);
+      setLeads(prev => prev.map(l => l.id === selectedLead.id ? refreshed : l));
+      setSelectedLead(refreshed);
+      setNewActivity({ type: "call", description: "" });
+      toast.success("Activity added");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to add activity");
+    }
   };
 
   const handleEditLead = (lead: Lead) => {
@@ -371,86 +356,80 @@ export default function App() {
   };
 
   const handleAddTeamMember = (name: string, _email: string, _role: string) => {
-    // Add new team member to the list (before "Unassigned"), skip if already present
     if (salesReps.includes(name)) return;
     const newReps = [...salesReps.filter(rep => rep !== "Unassigned"), name, "Unassigned"];
     setSalesReps(newReps);
   };
 
   const handleUpdateTeamMember = (oldName: string, newName: string, _email: string, _role: string) => {
-    // Update team member name
     const updatedReps = salesReps.map(rep => rep === oldName ? newName : rep);
     setSalesReps(updatedReps);
-    
-    // Update all leads assigned to the old name
+
     if (oldName !== newName) {
-      const updatedLeads = leads.map(lead => 
+      const updatedLeads = leads.map(lead =>
         lead.assignedTo === oldName ? { ...lead, assignedTo: newName } : lead
       );
       setLeads(updatedLeads);
-      
-      // Update selected lead if needed
+
       if (selectedLead && selectedLead.assignedTo === oldName) {
         setSelectedLead({ ...selectedLead, assignedTo: newName });
       }
     }
   };
 
-  const handleArchiveLead = () => {
+  const handleArchiveLead = async () => {
     if (!selectedLead) return;
-    
-    const isArchived = selectedLead.archived;
-    const updatedLeads = leads.map(lead => {
-      if (lead.id === selectedLead.id) {
-        const updatedLead = {
-          ...lead,
-          archived: !isArchived,
-          activities: [
-            {
-              id: Date.now().toString(),
-              type: "note" as const,
-              description: isArchived ? "Lead unarchived" : "Lead archived",
-              timestamp: new Date().toLocaleString()
-            },
-            ...lead.activities
-          ]
-        };
-        setSelectedLead(updatedLead);
-        return updatedLead;
-      }
-      return lead;
-    });
-    
-    setLeads(updatedLeads);
-    setIsDetailsPanelOpen(false);
+
+    try {
+      const updated = await apiArchiveLead(selectedLead.id);
+      setLeads(prev => prev.map(l => l.id === selectedLead.id ? updated : l));
+      setSelectedLead(updated);
+      setIsDetailsPanelOpen(false);
+      toast.success(updated.archived ? "Lead archived" : "Lead unarchived");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to archive lead");
+    }
   };
 
-  const handleLogin = (user: AppUser) => {
-    setSession(user);
+  const handleLogin = (token: string, user: AppUser) => {
+    setStoredSession(token, user);
     setCurrentUser(user);
   };
 
   const handleLogout = () => {
-    clearSession();
+    clearStoredSession();
     setCurrentUser(null);
+    setLeads([]);
   };
 
-  const handlePasswordChanged = (updatedUser: AppUser) => {
+  const handlePasswordChanged = (token: string, updatedUser: AppUser) => {
+    setStoredSession(token, updatedUser);
     setCurrentUser(updatedUser);
   };
 
   // Show login screen if not authenticated
   if (!currentUser) {
-    return <LoginScreen onLogin={handleLogin} />;
+    return (
+      <>
+        <Toaster position="top-right" richColors />
+        <LoginScreen onLogin={handleLogin} />
+      </>
+    );
   }
 
   // Show forced password change if required
   if (currentUser.mustChangePassword) {
-    return <ChangePasswordDialog user={currentUser} onPasswordChanged={handlePasswordChanged} />;
+    return (
+      <>
+        <Toaster position="top-right" richColors />
+        <ChangePasswordDialog user={currentUser} onPasswordChanged={handlePasswordChanged} />
+      </>
+    );
   }
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-gray-50">
+      <Toaster position="top-right" richColors />
       {/* Header */}
       <div className="bg-[#4169E1] text-white shadow-lg shrink-0">
         <div className="max-w-7xl mx-auto px-6 py-3">
@@ -584,8 +563,8 @@ export default function App() {
                         </SelectContent>
                       </Select>
                     </div>
-                    <Button 
-                      className="w-full bg-[#4169E1] hover:bg-[#3557c2]" 
+                    <Button
+                      className="w-full bg-[#4169E1] hover:bg-[#3557c2]"
                       onClick={handleAddLead}
                     >
                       {editingLead ? "Update Lead" : "Add Lead"}
@@ -663,7 +642,7 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-gray-500 text-xs mb-0.5">Avg Score</p>
-                  <p className="text-xl font-bold text-gray-900">{stats.avgScore}</p>
+                  <p className="text-xl font-bold text-gray-900">{stats.avgScore || 0}</p>
                 </div>
                 <div className="bg-pink-100 p-2 rounded-lg">
                   <BarChart3 className="h-4 w-4 text-pink-600" />
@@ -748,11 +727,6 @@ export default function App() {
                 >
                   <Archive className="h-4 w-4 mr-2" />
                   {showArchived ? "Viewing Archived" : "Archived"}
-                  {leads.filter(l => l.archived).length > 0 && (
-                    <Badge variant="secondary" className="ml-2 text-xs px-1.5 py-0">
-                      {leads.filter(l => l.archived).length}
-                    </Badge>
-                  )}
                 </Button>
 
                 <div className="flex border rounded-md">
@@ -778,8 +752,15 @@ export default function App() {
           </CardContent>
         </Card>
 
+        {/* Loading State */}
+        {leadsLoading && (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-[#4169E1]" />
+          </div>
+        )}
+
         {/* List View */}
-        {viewMode === "list" && (
+        {!leadsLoading && viewMode === "list" && (
           <Card className="flex-1 min-h-0 flex flex-col">
             <CardContent className="p-0 flex-1 min-h-0 flex flex-col">
               <div className="overflow-auto flex-1 min-h-0">
@@ -817,8 +798,8 @@ export default function App() {
                   </thead>
                   <tbody className="divide-y divide-gray-200 bg-white">
                     {filteredLeads.map((lead) => (
-                      <tr 
-                        key={lead.id} 
+                      <tr
+                        key={lead.id}
                         className="hover:bg-gray-50 transition-colors cursor-pointer"
                         onClick={() => openLeadDetails(lead)}
                       >
@@ -902,8 +883,8 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-              
-              {filteredLeads.length === 0 && (
+
+              {filteredLeads.length === 0 && !leadsLoading && (
                 <div className="text-center py-12 text-gray-500">
                   <Users className="h-12 w-12 mx-auto mb-4 text-gray-300" />
                   <p>No leads found matching your criteria</p>
@@ -914,7 +895,7 @@ export default function App() {
         )}
 
         {/* Kanban View */}
-        {viewMode === "kanban" && (
+        {!leadsLoading && viewMode === "kanban" && (
           <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 flex-1 min-h-0 overflow-auto">
             {(["new", "contacted", "qualified", "proposal", "won", "lost"] as const).map(status => (
               <Card key={status}>
@@ -928,8 +909,8 @@ export default function App() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {filteredLeads.filter(l => l.status === status).map(lead => (
-                    <Card 
-                      key={lead.id} 
+                    <Card
+                      key={lead.id}
                       className="cursor-pointer hover:shadow-md transition-shadow"
                       onClick={() => openLeadDetails(lead)}
                     >
@@ -1023,16 +1004,16 @@ export default function App() {
                     <div className="flex items-center justify-between">
                       <CardTitle className="text-base">Contact Information</CardTitle>
                       <div className="flex gap-2">
-                        <Button 
-                          variant="outline" 
+                        <Button
+                          variant="outline"
                           size="sm"
                           onClick={() => handleEditLead(selectedLead)}
                         >
                           <Pencil className="h-3 w-3 mr-2" />
                           Edit Lead
                         </Button>
-                        <Button 
-                          variant="outline" 
+                        <Button
+                          variant="outline"
                           size="sm"
                           onClick={handleArchiveLead}
                         >
@@ -1144,7 +1125,7 @@ export default function App() {
                           </div>
                           <div>
                             <Label htmlFor="activityDescription">Description</Label>
-                            <Textarea 
+                            <Textarea
                               id="activityDescription"
                               placeholder="Add a description of the activity..."
                               value={newActivity.description}
@@ -1152,7 +1133,7 @@ export default function App() {
                               rows={3}
                             />
                           </div>
-                          <Button 
+                          <Button
                             onClick={handleAddActivity}
                             className="w-full bg-[#4169E1] hover:bg-[#3557c2]"
                             disabled={!newActivity.description.trim()}
@@ -1172,13 +1153,13 @@ export default function App() {
                       </CardHeader>
                       <CardContent>
                         <div className="space-y-3">
-                          <Textarea 
+                          <Textarea
                             placeholder="Add a note about this lead..."
                             value={newNote}
                             onChange={(e) => setNewNote(e.target.value)}
                             rows={3}
                           />
-                          <Button 
+                          <Button
                             onClick={handleAddNote}
                             className="w-full bg-[#4169E1] hover:bg-[#3557c2]"
                           >
@@ -1221,7 +1202,7 @@ export default function App() {
                         <div className="space-y-3">
                           <div>
                             <Label htmlFor="taskTitle">Task</Label>
-                            <Input 
+                            <Input
                               id="taskTitle"
                               placeholder="e.g., Send proposal"
                               value={newTask.title}
@@ -1230,14 +1211,14 @@ export default function App() {
                           </div>
                           <div>
                             <Label htmlFor="taskDate">Due Date</Label>
-                            <Input 
+                            <Input
                               id="taskDate"
                               type="date"
                               value={newTask.dueDate}
                               onChange={(e) => setNewTask({ ...newTask, dueDate: e.target.value })}
                             />
                           </div>
-                          <Button 
+                          <Button
                             onClick={handleAddTask}
                             className="w-full bg-[#4169E1] hover:bg-[#3557c2]"
                           >
@@ -1258,7 +1239,11 @@ export default function App() {
                             <p className="text-sm text-gray-500 text-center py-4">No tasks scheduled</p>
                           ) : (
                             selectedLead.tasks.map(task => (
-                              <div key={task.id} className="flex items-start gap-3 p-3 border rounded-lg">
+                              <div
+                                key={task.id}
+                                className="flex items-start gap-3 p-3 border rounded-lg cursor-pointer hover:bg-gray-50"
+                                onClick={() => handleToggleTask(task.id)}
+                              >
                                 <div className="flex-1">
                                   <div className={`text-sm ${task.completed ? 'line-through text-gray-500' : 'text-gray-900'}`}>
                                     {task.title}

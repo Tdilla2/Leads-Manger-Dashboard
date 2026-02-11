@@ -1,14 +1,15 @@
 import { useState } from "react";
-import { Lock, User, Eye, EyeOff } from "lucide-react";
+import { Lock, User, Eye, EyeOff, Loader2 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
-import { authenticate, type AppUser } from "../auth";
+import { type AppUser } from "../auth";
+import { apiLogin } from "../api";
 import logo from "../../assets/ce8d117a995a5a85f88957aad4cbbb801c7516f2.png";
 
 interface LoginScreenProps {
-  onLogin: (user: AppUser) => void;
+  onLogin: (token: string, user: AppUser) => void;
 }
 
 export function LoginScreen({ onLogin }: LoginScreenProps) {
@@ -16,8 +17,9 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
 
@@ -26,11 +28,14 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
       return;
     }
 
-    const user = authenticate(username, password);
-    if (user) {
-      onLogin(user);
-    } else {
-      setError("Invalid username or password.");
+    setLoading(true);
+    try {
+      const result = await apiLogin(username, password);
+      onLogin(result.token, result.user);
+    } catch (err: any) {
+      setError(err.message || "Invalid username or password.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -57,6 +62,7 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
                   placeholder="Enter username or email"
                   className="pl-10"
                   autoComplete="username"
+                  disabled={loading}
                 />
               </div>
             </div>
@@ -72,6 +78,7 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
                   placeholder="Enter password"
                   className="pl-10 pr-10"
                   autoComplete="current-password"
+                  disabled={loading}
                 />
                 <button
                   type="button"
@@ -89,8 +96,8 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
               </div>
             )}
 
-            <Button type="submit" className="w-full bg-[#4169E1] hover:bg-[#3557c2]">
-              Sign In
+            <Button type="submit" className="w-full bg-[#4169E1] hover:bg-[#3557c2]" disabled={loading}>
+              {loading ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Signing In...</> : "Sign In"}
             </Button>
           </form>
 

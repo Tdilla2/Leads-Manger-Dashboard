@@ -1,5 +1,14 @@
 node_modules/
 dist/
 dist-deploy.zip
+dist.zip
 .claude/
 node_modules
+.env
+create-zip.ps1
+nul
+backend/node_modules/
+backend/dist/
+backend/lambda.zip
+backend/run-migration.mjs
+backend/stage-config.json
