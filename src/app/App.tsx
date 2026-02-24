@@ -382,10 +382,10 @@ export default function App() {
 
     try {
       const updated = await apiArchiveLead(selectedLead.id);
-      setLeads(prev => prev.map(l => l.id === selectedLead.id ? updated : l));
-      setSelectedLead(updated);
+      setSelectedLead(null);
       setIsDetailsPanelOpen(false);
       toast.success(updated.archived ? "Lead archived" : "Lead unarchived");
+      await loadLeads();
     } catch (err: any) {
       toast.error(err.message || "Failed to archive lead");
     }
