@@ -875,7 +875,7 @@ export default function App() {
                         <td className="px-4 py-2">
                           <div className="text-sm text-gray-500 flex items-center">
                             <Clock className="h-3 w-3 mr-2 text-gray-400" />
-                            {lead.lastContact || "Never"}
+                            {lead.lastContact ? new Date(lead.lastContact).toLocaleDateString() : "Never"}
                           </div>
                         </td>
                       </tr>

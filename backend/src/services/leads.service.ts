@@ -254,6 +254,11 @@ export async function addActivity(leadId: string, type: string, description: str
     [leadId, type, description]
   );
 
+  await pool.query(
+    `UPDATE leads SET last_contact = NOW() WHERE id = $1`,
+    [leadId]
+  );
+
   const row = result.rows[0];
   return {
     id: row.id,
